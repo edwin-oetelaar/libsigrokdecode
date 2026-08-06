@@ -33,6 +33,8 @@ This is the list of <ptype> codes and their respective <pdata> values:
  - 'FOOTER': The data is the footer byte's value.
  - 'TELEM_SLOT': The data is the telemetry slot byte.
  - 'TELEMETRY': The data is a tuple of (slot_nr, value_16bit).
+ - 'TELEMETRY_VOLTAGE': The data is a tuple of (slot_nr, voltage_volts, type_flag).
+ - 'TELEMETRY_CURRENT': The data is a tuple of (slot_nr, current_ma, type_flag).
 """
 
 import sigrokdecode as srd
@@ -53,8 +55,8 @@ class Decoder(srd.Decoder):
     Futaba SBUS and SBUS2 High-Performance Protocol Decoder for libsigrokdecode.
 
     Decodes 25-byte servo channel frames (channels 1-16 proportional, 17-18 digital,
-    flags, failsafe) and 3-byte SBUS2 telemetry slots (slot ID + 16-bit payload)
-    using fast byte-buffer bitwise unpacking and precise bit-level sample alignment.
+    flags, failsafe) and 3-byte SBUS2 telemetry slots with sensor type flag decoding
+    (0xC0 for Voltage in 0.1V steps, 0xC4 for Current in mA).
     """
     api_version = 3
     id = 'sbus_futaba'
@@ -151,7 +153,9 @@ class Decoder(srd.Decoder):
 
     def _process_telem(self):
         """
-        Brief: Decodes 3-byte SBUS2 telemetry slots (1 byte Slot ID + 2 bytes payload) from bytes_accum.
+        Brief: Decodes 3-byte SBUS2 telemetry slots (Slot ID + Data Byte 1 + Data Byte 2).
+               Data Byte 1 acts as a sensor type indicator (0xC0 = Voltage, 0xC4 = Current).
+               Data Byte 2 contains the corresponding measurement value.
         Params: None
         Invariants: Operates during State.TELEM. Switches to State.FRAME if 0x0F header is received.
         Output: None
@@ -175,16 +179,45 @@ class Decoder(srd.Decoder):
             b_msb, ss_m, es_m = telem_bytes[2]
 
             slot_nr = b_slot
-            val_16 = b_lsb | (b_msb << 8)
-
-            text_slot = ['Slot {:d} (0x{:02x})'.format(slot_nr, slot_nr), 'Slot {:d}'.format(slot_nr), 'S{:d}'.format(slot_nr)]
-            self.putg(ss_s, es_s, [Ann.TELEM_SLOT, text_slot])
-            self.putpy(ss_s, es_s, ['TELEM_SLOT', slot_nr])
-
             ss_data, es_data = ss_l, es_m
-            text_data = ['Val: {:d} (0x{:04x})'.format(val_16, val_16), '{:d}'.format(val_16)]
-            self.putg(ss_data, es_data, [Ann.TELEM_DATA, text_data])
-            self.putpy(ss_data, es_data, ['TELEMETRY', (slot_nr, val_16)])
+
+            if b_lsb == 0xc0:
+                v_val = b_msb / 10.0
+                text_slot = ['Slot {:d} (Voltage)'.format(slot_nr), 'Slot {:d}'.format(slot_nr), 'S{:d}'.format(slot_nr)]
+                text_data = [
+                    'Voltage: {:.1f}V (Flag: 0x{:02x})'.format(v_val, b_lsb),
+                    'Voltage: {:.1f}V'.format(v_val),
+                    '{:.1f}V'.format(v_val)
+                ]
+                self.putg(ss_s, es_s, [Ann.TELEM_SLOT, text_slot])
+                self.putpy(ss_s, es_s, ['TELEM_SLOT', slot_nr])
+
+                self.putg(ss_data, es_data, [Ann.TELEM_DATA, text_data])
+                self.putpy(ss_data, es_data, ['TELEMETRY_VOLTAGE', (slot_nr, v_val, b_lsb)])
+
+            elif b_lsb == 0xc4:
+                c_val = float(b_msb)
+                text_slot = ['Slot {:d} (Current)'.format(slot_nr), 'Slot {:d}'.format(slot_nr), 'S{:d}'.format(slot_nr)]
+                text_data = [
+                    'Current: {:.1f} mA (Flag: 0x{:02x})'.format(c_val, b_lsb),
+                    'Current: {:.1f} mA'.format(c_val),
+                    '{:.1f} mA'.format(c_val)
+                ]
+                self.putg(ss_s, es_s, [Ann.TELEM_SLOT, text_slot])
+                self.putpy(ss_s, es_s, ['TELEM_SLOT', slot_nr])
+
+                self.putg(ss_data, es_data, [Ann.TELEM_DATA, text_data])
+                self.putpy(ss_data, es_data, ['TELEMETRY_CURRENT', (slot_nr, c_val, b_lsb)])
+
+            else:
+                val_16 = b_lsb | (b_msb << 8)
+                text_slot = ['Slot {:d} (0x{:02x})'.format(slot_nr, slot_nr), 'Slot {:d}'.format(slot_nr), 'S{:d}'.format(slot_nr)]
+                text_data = ['Val: {:d} (0x{:04x})'.format(val_16, val_16), '{:d}'.format(val_16)]
+                self.putg(ss_s, es_s, [Ann.TELEM_SLOT, text_slot])
+                self.putpy(ss_s, es_s, ['TELEM_SLOT', slot_nr])
+
+                self.putg(ss_data, es_data, [Ann.TELEM_DATA, text_data])
+                self.putpy(ss_data, es_data, ['TELEMETRY', (slot_nr, val_16)])
 
     def _process_frame(self):
         """
@@ -391,4 +424,3 @@ class Decoder(srd.Decoder):
             self.handle_idle(ss, es)
         elif ptype == 'BREAK':
             self.handle_break(ss, es)
-
